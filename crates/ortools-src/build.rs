@@ -303,6 +303,7 @@ fn build_from_source(_dest: &Path, _target: &str) -> PathBuf {
 #[cfg(feature = "source")]
 fn build_from_source(dest: &Path, target: &str) -> PathBuf {
     let src = fetch_sources(dest);
+    force_static_deps(&src);
 
     println!("cargo:warning=building OR-Tools from source — expect 30-90 minutes");
 
@@ -354,6 +355,88 @@ fn build_from_source(dest: &Path, target: &str) -> PathBuf {
     prune(dest);
     write_link_manifest(dest);
     dest.to_path_buf()
+}
+
+/// Force the vendored dependencies to build as static archives.
+///
+/// Three separate things in `cmake/dependencies/CMakeLists.txt` defeat
+/// `-DBUILD_SHARED_LIBS=OFF`, which reaches OR-Tools' own targets and nothing
+/// else:
+///
+///   * a plain `set(BUILD_SHARED_LIBS ON)` before anything is fetched, which
+///     shadows the cache entry for that directory and every subdirectory
+///     `FetchContent` adds beneath it — zlib, bzip2, abseil, protobuf, re2 and
+///     eigen, all six of them;
+///   * `set(protobuf_BUILD_SHARED_LIBS ON)`, which protobuf's own CMake turns
+///     straight back into `BUILD_SHARED_LIBS ON` for its subtree;
+///   * bzip2, whose `ENABLE_STATIC_LIB` defaults off and whose
+///     `ENABLE_SHARED_LIB` defaults on. Both matter: bzip2 aliases
+///     `BZip2::BZip2` onto its static target only when no shared target exists,
+///     and `cmake/cpp.cmake` links that alias into `ortools`.
+///
+/// Upstream means all of it — Google ships one dynamically linked archive per
+/// distribution. This crate ships a single static tree, so the lines have to
+/// go, and patching the sources is the only lever: none of them is a cache
+/// variable, and OR-Tools exposes no option to override them.
+///
+/// Left alone the build fails everywhere, just at different points. macOS dies
+/// linking abseil's own dylibs: ld64 resolves every symbol when it links one,
+/// and the hidden visibility set above leaves abseil's cross-library references
+/// undefined. Linux gets further, because ELF permits a shared object with
+/// unresolved symbols, and then fails at the first executable linked against
+/// them — `libabsl_cord.so: undefined reference to CordRepBtree::IsFlat`, and
+/// several hundred more like it.
+///
+/// Had it linked, the result would still have been unusable: `prune` deletes
+/// every .so from the install tree for not being an archive, and
+/// `write_link_manifest` records only archives, so the tarball would carry
+/// `libortools.a` with no abseil, protobuf, re2 or bz2 in it at all.
+#[cfg(feature = "source")]
+fn force_static_deps(src: &Path) {
+    // Anchored, not global: the same file sets BUILD_SHARED_LIBS again for
+    // Boost and for Windows, and those occurrences must keep their own values.
+    const PATCHES: &[(&str, &str)] = &[
+        (
+            "set(FETCHCONTENT_UPDATES_DISCONNECTED ON)\nset(BUILD_SHARED_LIBS ON)",
+            "set(FETCHCONTENT_UPDATES_DISCONNECTED ON)\nset(BUILD_SHARED_LIBS OFF)",
+        ),
+        (
+            "set(protobuf_BUILD_SHARED_LIBS ON)",
+            "set(protobuf_BUILD_SHARED_LIBS OFF)",
+        ),
+        // bzip2 patches CMP0077 to NEW, so a plain set() ahead of its option()
+        // is honoured. The static target installs as libbz2_static.a, which the
+        // link manifest picks up like any other archive.
+        (
+            "  set(ENABLE_LIB_ONLY ON)\n  set(ENABLE_TESTS OFF)",
+            "  set(ENABLE_LIB_ONLY ON)\n  set(ENABLE_TESTS OFF)\n  \
+             set(ENABLE_SHARED_LIB OFF)\n  set(ENABLE_STATIC_LIB ON)",
+        ),
+    ];
+
+    let path = src
+        .join("cmake")
+        .join("dependencies")
+        .join("CMakeLists.txt");
+    let mut text =
+        std::fs::read_to_string(&path).expect("OR-Tools sources have no dependency CMakeLists.txt");
+
+    for (from, to) in PATCHES {
+        // The source tree is reused across runs, so this has to be idempotent.
+        if text.contains(to) {
+            continue;
+        }
+        assert!(
+            text.contains(from),
+            "{}: expected `{from}`. OR-Tools changed how it links its \
+             dependencies — check that they still build static before dropping \
+             this patch.",
+            path.display()
+        );
+        text = text.replace(from, to);
+    }
+
+    std::fs::write(&path, text).expect("failed to patch dependency CMakeLists.txt");
 }
 
 /// Download and unpack the OR-Tools source tree next to `dest`, returning its path.
