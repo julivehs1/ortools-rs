@@ -1,0 +1,11 @@
+# Single source of truth for what this crate provides.
+#
+# Read by build.rs (include_str!) and by .github/workflows/prebuilt.yml, so the
+# release tag cannot drift away from what the build script looks for.
+
+# Upstream OR-Tools release.
+ortools_version = v9.15
+
+# Bump when the tarballs change but OR-Tools does not: new compiler flags, new
+# pruning, different runtime bundling. Invalidates every cache directory.
+build_revision = rev1

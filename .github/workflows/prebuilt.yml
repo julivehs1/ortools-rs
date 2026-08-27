@@ -1,0 +1,209 @@
+name: prebuilt
+
+# Runs on demand only. Producing the tarballs takes hours and is needed roughly
+# as often as OR-Tools releases, which is two or three times a year — not on
+# every commit.
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: 'Targets to build: "all", "linux", "macos", "windows", or a comma-separated list of triples'
+        required: false
+        default: all
+        type: string
+  push:
+    branches: [prebuilt]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Works out what to build and what to call it.
+  #
+  # The release tag comes from version.txt, the same file build.rs reads, so it
+  # cannot drift away from what the build script looks for.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.derive.outputs.tag }}
+      version: ${{ steps.derive.outputs.version }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      complete: ${{ steps.matrix.outputs.complete }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: derive
+        run: |
+          set -euo pipefail
+          field() {
+            sed 's/#.*//' crates/ortools-src/version.txt \
+              | grep -E "^\s*$1\s*=" | head -1 | cut -d= -f2- | tr -d '[:space:]'
+          }
+          version=$(field ortools_version)
+          revision=$(field build_revision)
+          [ -n "$version" ] && [ -n "$revision" ] || { echo "::error::version.txt incomplete"; exit 1; }
+          # Mirrors artifact_name(None) in build.rs: v9.15 + rev1 -> ortools-9_15-rev1
+          tag="ortools-${version#v}-${revision}"
+          tag="${tag//./_}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag (OR-Tools $version)"
+
+      - id: matrix
+        env:
+          # A push to the prebuilt branch carries no inputs, and means everything.
+          SELECTION: ${{ inputs.targets || 'all' }}
+        run: |
+          set -euo pipefail
+          # Linux is built inside a glibc 2.28 image on purpose: binaries built
+          # there run on every currently supported distribution, which is what
+          # collapses Google's fourteen per-distro archives into one tarball per
+          # architecture. macOS and Windows build on native runners, because
+          # libc++ and the MSVC STL have stable ABIs and cross-building either
+          # invites mismatches that only surface at the consumer's link step.
+          cat > /tmp/all.json <<'JSON'
+          [
+            {"target": "x86_64-unknown-linux-gnu",  "os": "linux",   "runs-on": "ubuntu-24.04",     "container": "quay.io/pypa/manylinux_2_28_x86_64"},
+            {"target": "aarch64-unknown-linux-gnu", "os": "linux",   "runs-on": "ubuntu-24.04-arm", "container": "quay.io/pypa/manylinux_2_28_aarch64"},
+            {"target": "aarch64-apple-darwin",      "os": "macos",   "runs-on": "macos-14",         "container": ""},
+            {"target": "x86_64-apple-darwin",       "os": "macos",   "runs-on": "macos-15-intel",   "container": ""},
+            {"target": "x86_64-pc-windows-msvc",    "os": "windows", "runs-on": "windows-2022",     "container": ""}
+          ]
+          JSON
+
+          selection=$(echo "$SELECTION" | tr -d '[:space:]')
+          if [ "$selection" = "all" ]; then
+            filtered=$(cat /tmp/all.json)
+          else
+            filtered=$(jq -c --arg sel "$selection" '
+              ($sel | split(",")) as $want
+              | map(select(.target as $t | .os as $o | $want | any(. == $t or . == $o)))
+            ' /tmp/all.json)
+          fi
+
+          count=$(echo "$filtered" | jq 'length')
+          total=$(jq 'length' /tmp/all.json)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no targets match '$SELECTION'. Known:"
+            jq -r '.[] | "  \(.target)  (os: \(.os))"' /tmp/all.json
+            exit 1
+          fi
+
+          echo "matrix=$filtered" >> "$GITHUB_OUTPUT"
+          # A partial run does not publish: `just digests` replaces the whole
+          # PREBUILT_SHA256 table, so a release missing targets would silently
+          # unpin the ones that were not rebuilt.
+          [ "$count" -eq "$total" ] && complete=true || complete=false
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+          echo "Building $count of $total targets; publish a release: $complete"
+          echo "$filtered" | jq -r '.[] | "  \(.target)"'
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runs-on }}
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install build tools (manylinux)
+        if: matrix.container != ''
+        run: |
+          set -euo pipefail
+          dnf install -y cmake ninja-build git
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.container == ''
+
+      - name: build OR-Tools
+        shell: bash
+        run: cargo build --release -p ortools-src --features source
+
+      # build.rs leaves the finished tree in the cargo target directory under
+      # exactly the name the download path would have used, so packaging is a
+      # plain tar of that directory.
+      - name: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          # build.rs wrote this; no naming logic is reproduced here.
+          name=$(cat target/ortools-artifact-name.txt)
+          test -d "target/$name" || { echo "::error::expected target/$name"; ls target; exit 1; }
+          test -f "target/$name/cpsat-libs.txt" || { echo "::error::no link manifest"; exit 1; }
+          echo "::group::tree contents"
+          du -sh "target/$name"
+          cat "target/$name/cpsat-libs.txt"
+          echo "::endgroup::"
+          mkdir -p dist
+          tar czf "dist/$name.tar.gz" -C target "$name"
+          ls -lh "dist/$name.tar.gz"
+          # Record the digest against the real target triple. The tarball name
+          # cannot be parsed back into one: build.rs turns hyphens into
+          # underscores, and `x86_64` already contains an underscore, so the
+          # mapping only exists here, where the matrix knows the triple.
+          digest=$(sha256sum "dist/$name.tar.gz" | cut -d' ' -f1)
+          echo "${{ matrix.target }} $digest" > "dist/digest-${{ matrix.target }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/digest-*.txt
+
+  release:
+    needs: [plan, build]
+    if: needs.plan.outputs.complete == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The digests are the point. build.rs refuses any tarball whose SHA256 is
+      # not listed in PREBUILT_SHA256, so publishing without recording them
+      # produces a release nothing will accept — deliberately, since a silently
+      # wrong solver binary is worse than a failed build.
+      - name: checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          # SHA256SUMS for humans and `sha256sum -c`; digests.txt for `just
+          # digests`, keyed by target triple rather than by file name.
+          sha256sum *.tar.gz | tee SHA256SUMS
+          cat digest-*.txt | sort > digests.txt
+          rm digest-*.txt
+          echo "::group::digests.txt"; cat digests.txt; echo "::endgroup::"
+          {
+            echo '## Pin these with `just digests`'
+            echo
+            echo '```'
+            cat digests.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.plan.outputs.tag }}
+          name: OR-Tools ${{ needs.plan.outputs.version }} prebuilt (${{ needs.plan.outputs.tag }})
+          body: |
+            Statically linkable OR-Tools ${{ needs.plan.outputs.version }}, built for `cpsat`.
+
+            CP-SAT only: SCIP, COIN-OR, HiGHS, PDLP, MathOpt and FlatZinc are
+            compiled out, so these carry OR-Tools, abseil, protobuf, re2, zlib
+            and bzip2 and nothing else.
+
+            Verify against `SHA256SUMS` before use. `ortools-src` does this
+            automatically and refuses a tarball whose digest it does not know.
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/digests.txt

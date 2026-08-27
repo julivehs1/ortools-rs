@@ -1,0 +1,82 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Google's own C++ archives, used only until this repo publishes its own
+  # prebuilts. They are per-distribution and dynamically linked, which is
+  # exactly the problem this project exists to solve — but they are perfectly
+  # good for exercising the bindings.
+  ORTOOLS_RELEASE: v9.15
+  ORTOOLS_BUILD: 9.15.6755
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: ubuntu-24.04
+            archive: or-tools_amd64_ubuntu-24.04_cpp_v9.15.6755.tar.gz
+          - runs-on: macos-14
+            archive: or-tools_arm64_macOS-26.2_cpp_v9.15.6755.tar.gz
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cache OR-Tools archive
+        id: ortools-cache
+        uses: actions/cache@v4
+        with:
+          path: ortools
+          key: ortools-${{ matrix.archive }}
+
+      - name: fetch OR-Tools
+        if: steps.ortools-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          url="https://github.com/google/or-tools/releases/download/${ORTOOLS_RELEASE}/${{ matrix.archive }}"
+          echo "::group::downloading $url"
+          curl -fsSL -o ortools.tar.gz "$url"
+          echo "::endgroup::"
+          mkdir -p ortools
+          tar xzf ortools.tar.gz -C ortools --strip-components=1
+          rm ortools.tar.gz
+
+      - name: expose OR-Tools to the build
+        run: |
+          set -euo pipefail
+          root="$PWD/ortools"
+          test -f "$root/include/ortools/sat/cp_model.h" \
+            || { echo "::error::no cp_model.h under $root"; exit 1; }
+          echo "ORTOOLS_ROOT=$root" >> "$GITHUB_ENV"
+          # These archives ship shared libraries; the loader needs to find them.
+          echo "LD_LIBRARY_PATH=$root/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$root/lib" >> "$GITHUB_ENV"
+
+      - run: cargo fmt --all --check
+
+      - run: cargo clippy --all-targets -- -D warnings
+
+      - run: cargo test --workspace
+
+      - name: job-shop example produces an optimal schedule
+        run: |
+          cargo run --example jobshop | tee out.txt
+          grep -q '^status: Optimal$' out.txt
+
+      # Separate package, so this fails if a build-script directive stops
+      # reaching consumers — link args do not cross package boundaries.
+      - name: cpsat works from outside the workspace
+        run: cargo run --manifest-path tests/consumer/Cargo.toml

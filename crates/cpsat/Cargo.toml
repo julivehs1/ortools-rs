@@ -1,0 +1,25 @@
+[package]
+name = "cpsat"
+description = "Ergonomic Rust bindings to the Google CP-SAT constraint solver, with no system OR-Tools install required"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["constraint", "solver", "optimization", "cp-sat", "or-tools"]
+categories = ["science", "algorithms", "api-bindings"]
+
+[dependencies]
+prost.workspace = true
+# A regular dependency, not a build one: cargo propagates a `links` crate's
+# metadata and its link flags only along normal dependency edges.
+ortools-src.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+cc.workspace = true
+
+[features]
+default = []
+# Forwarded to ortools-src: build OR-Tools from upstream sources.
+source = ["ortools-src/source"]

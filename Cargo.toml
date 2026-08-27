@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ortools-src",
+    "crates/cpsat",
+]
+# Outside the workspace on purpose: it exists to prove cpsat works across a
+# package boundary, which is where build-script link flags stop propagating.
+exclude = ["tests/consumer"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Veit"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/julivehs1/ortools-rs"
+
+[workspace.dependencies]
+ortools-src = { path = "crates/ortools-src", version = "0.1.0" }
+
+prost = "0.14"
+prost-build = "0.14"
+cc = "1"
+minreq = { version = "2", features = ["https-rustls"] }
+libflate = "2"
+tar = "0.4"
+sha2 = "0.10"
+cmake = "0.1"

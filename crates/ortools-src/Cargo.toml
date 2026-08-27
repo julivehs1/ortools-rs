@@ -1,0 +1,24 @@
+[package]
+name = "ortools-src"
+description = "Statically linkable OR-Tools C++ binaries, downloaded or built at build time"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Exposes DEP_ORTOOLS_{ROOT,INCLUDE,LIB} to dependent crates' build scripts,
+# and makes cargo enforce that only one copy of OR-Tools is in the graph.
+links = "ortools"
+
+[build-dependencies]
+minreq.workspace = true
+libflate.workspace = true
+tar.workspace = true
+sha2.workspace = true
+cmake = { workspace = true, optional = true }
+
+[features]
+default = []
+# Build OR-Tools from upstream sources instead of downloading a prebuilt tarball.
+source = ["dep:cmake"]
