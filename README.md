@@ -1,7 +1,8 @@
 # ortools-rs
 
 Rust bindings to Google's [CP-SAT][cpsat] constraint solver — with no system
-OR-Tools install, no `ORTOOLS_PREFIX`, and no `RUSTFLAGS` incantation.
+OR-Tools install, no `protoc`, no `ORTOOLS_PREFIX`, and no `RUSTFLAGS`
+incantation.
 
 ```rust
 use cpsat::CpModelBuilder;
@@ -30,12 +31,13 @@ is versioned and maintained separately from whatever API sits on top.
 ## Why another one
 
 There are several OR-Tools crates already. Every one of them asks you to
-install OR-Tools yourself first, and the most-used one covers roughly the
-boolean and linear part of CP-SAT.
+install OR-Tools yourself first, and the most-used one also needs a `protoc` on
+your PATH and covers roughly the boolean and linear part of CP-SAT.
 
 |  | `cpsat` | `cp_sat` | `or-tools-sys` |
 |---|---|---|---|
 | Zero-setup build | planned | no | no |
+| Builds without a system `protoc` | **yes** | no | — |
 | Intervals, `no_overlap`, `cumulative` | **yes** | no | no |
 | `circuit` / `routes` | planned | no | no |
 | `table`, `automaton`, `element`, `inverse`, `reservoir` | planned | no | no |

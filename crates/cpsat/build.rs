@@ -18,7 +18,19 @@ fn main() {
     println!("cargo:rerun-if-changed=src/shim.cpp");
     println!("cargo:rerun-if-changed=build.rs");
 
-    // prost-build ships its own protoc, so this works with no system protobuf.
+    println!("cargo:rerun-if-env-changed=PROTOC");
+
+    // prost-build needs a protoc and does not bundle one. Use the vendored
+    // binary unless PROTOC says otherwise, so a contributor's machine, CI and a
+    // consumer's build all parse the protos with the same compiler instead of
+    // whatever happens to be on PATH — and so a consumer needs nothing
+    // installed, which is the whole point of this crate.
+    if env::var_os("PROTOC").is_none() {
+        let protoc = protoc_bin_vendored::protoc_bin_path()
+            .expect("no vendored protoc for this platform — set PROTOC to one");
+        // Safe here: build scripts are single-threaded at this point.
+        unsafe { env::set_var("PROTOC", protoc) };
+    }
     prost_build::compile_protos(PROTOS, &["proto/"]).expect("failed to compile CP-SAT protos");
 
     if env::var("DOCS_RS").is_ok() {

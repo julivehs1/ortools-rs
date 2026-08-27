@@ -17,6 +17,7 @@ ortools-src.workspace = true
 
 [build-dependencies]
 prost-build.workspace = true
+protoc-bin-vendored.workspace = true
 cc.workspace = true
 
 [features]
