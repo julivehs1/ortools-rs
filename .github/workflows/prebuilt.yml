@@ -30,7 +30,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       complete: ${{ steps.matrix.outputs.complete }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - id: derive
         run: |
@@ -72,8 +72,10 @@ jobs:
           JSON
 
           selection=$(echo "$SELECTION" | tr -d '[:space:]')
+          # Compact on both paths: a `key=value` line in $GITHUB_OUTPUT cannot
+          # carry a newline, and the table above is pretty-printed for reading.
           if [ "$selection" = "all" ]; then
-            filtered=$(cat /tmp/all.json)
+            filtered=$(jq -c . /tmp/all.json)
           else
             filtered=$(jq -c --arg sel "$selection" '
               ($sel | split(",")) as $want
@@ -107,7 +109,7 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
     container: ${{ matrix.container }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: install build tools (manylinux)
         if: matrix.container != ''
@@ -149,7 +151,7 @@ jobs:
           digest=$(sha256sum "dist/$name.tar.gz" | cut -d' ' -f1)
           echo "${{ matrix.target }} $digest" > "dist/digest-${{ matrix.target }}.txt"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: |
@@ -163,7 +165,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -190,7 +192,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.plan.outputs.tag }}
           name: OR-Tools ${{ needs.plan.outputs.version }} prebuilt (${{ needs.plan.outputs.tag }})

@@ -27,7 +27,7 @@ jobs:
             archive: or-tools_arm64_macOS-26.2_cpp_v9.15.6755.tar.gz
     runs-on: ${{ matrix.runs-on }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,7 +37,7 @@ jobs:
 
       - name: cache OR-Tools archive
         id: ortools-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ortools
           key: ortools-${{ matrix.archive }}
