@@ -148,7 +148,13 @@ jobs:
           # cannot be parsed back into one: build.rs turns hyphens into
           # underscores, and `x86_64` already contains an underscore, so the
           # mapping only exists here, where the matrix knows the triple.
-          digest=$(sha256sum "dist/$name.tar.gz" | cut -d' ' -f1)
+          # macOS runners ship `shasum`, not `sha256sum`; both print
+          # "<digest>  <file>", so the cut works either way.
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest=$(sha256sum "dist/$name.tar.gz" | cut -d' ' -f1)
+          else
+            digest=$(shasum -a 256 "dist/$name.tar.gz" | cut -d' ' -f1)
+          fi
           echo "${{ matrix.target }} $digest" > "dist/digest-${{ matrix.target }}.txt"
 
       - uses: actions/upload-artifact@v7
